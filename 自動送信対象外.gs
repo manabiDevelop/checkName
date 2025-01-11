@@ -1,53 +1,60 @@
 function moveData() {
+  // --------------------------------------------------------------------------------
+  // 0) 主要シートの取得
+  // --------------------------------------------------------------------------------
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // ▼「授業報告最新」「授業報告_確定」「授業報告_対象外」は同一スプレッドシート内
   const sheetLatest     = ss.getSheetByName("授業報告最新");   // 元データ（新規行が増えている）
   const sheetConfirmed  = ss.getSheetByName("授業報告_確定");   // 確定データ
   const sheetExcluded   = ss.getSheetByName("授業報告_対象外"); // 対象外(エラー)データ
-  const sheetRef        = ss.getSheetByName("授業報告&授業日程変更2024/09/09~(修正・参照)");
-
-  // --------------------------------------------------------------------------------
-  // 1) 参照シート「授業報告」(M列, R列)のデータを辞書化
-  //    例：キー "M列の値||R列の値" => true
-  // --------------------------------------------------------------------------------
-  const refValues = sheetRef.getDataRange().getValues(); 
-  // ここではシンプルにシート全体を一度に取得（見出し行を除くなど実運用で調整）
-  // ※実際は「授業報告」の範囲(列M, R)と「授業日程変更」の範囲(列N, R)を分けて処理する想定
   
-  // 辞書を作るためのオブジェクト
-  let reportDict = {};     // 授業報告(M, R)
-  let scheduleDict = {};   // 授業日程変更(N, R)
+  // ▼「授業報告&授業日程変更2024/09/09~(修正・参照)」は「別スプレッドシート」
+  //    以下の "xxxxx" は、対象となるスプレッドシートのファイルIDに置き換えてください
+  //    （URLが "https://docs.google.com/spreadsheets/d/xxxxx/edit#gid=0" なら xxxxx の部分）
+  const refSs = SpreadsheetApp.openById("xxxxx");
+  const sheetReport   = refSs.getSheetByName("授業報告");     // 別SS内の「授業報告」シート
+  const sheetSchedule = refSs.getSheetByName("授業日程変更"); // 別SS内の「授業日程変更」シート
 
-  // シートの1行目(インデックス0)を見出しと仮定し、2行目以降を走査
-  for (let i = 1; i < refValues.length; i++) {
-    const row = refValues[i];
-    const valM = row[12];  // M列(13番目) => インデックス12
-    const valN = row[13];  // N列(14番目) => インデックス13
-    const valR = row[17];  // R列(18番目) => インデックス17
-
-    // 授業報告(M列,R列)
+  // --------------------------------------------------------------------------------
+  // 1) 参照先スプレッドシートの「授業報告」(M列, R列) と「授業日程変更」(N列, R列) の値を辞書化
+  // --------------------------------------------------------------------------------
+  // --- 授業報告(別SS) M列(13) & R列(18) ---
+  const reportValues = sheetReport.getDataRange().getValues();
+  let reportDict = {};
+  for (let i = 1; i < reportValues.length; i++) {  // 1行目(見出し)除外を想定
+    const row = reportValues[i];
+    const valM = row[12];  // M列 (列13) → インデックス12
+    const valR = row[17];  // R列 (列18) → インデックス17
     if (valM && valR) {
-      const key = valM + "||" + valR;
+      const key = valM + "||" + valR;  // 例: "M値||R値"
       reportDict[key] = true;
     }
-    // 授業日程変更(N列,R列)
+  }
+  
+  // --- 授業日程変更(別SS) N列(14) & R列(18) ---
+  const scheduleValues = sheetSchedule.getDataRange().getValues();
+  let scheduleDict = {};
+  for (let i = 1; i < scheduleValues.length; i++) {
+    const row = scheduleValues[i];
+    const valN = row[13];  // N列 (列14) → インデックス13
+    const valR = row[17];  // R列 (列18) → インデックス17
     if (valN && valR) {
-      const key = valN + "||" + valR;
+      const key = valN + "||" + valR;  // 例: "N値||R値"
       scheduleDict[key] = true;
     }
   }
 
   // --------------------------------------------------------------------------------
-  // 2) 対象外シートの既存データを覚えておく
-  //    例：キー "L列の値||T列の値" => true
+  // 2) すでに「対象外(エラー)」として追加済みデータ(L,T)を控えておき、重複追加を防ぐ
   // --------------------------------------------------------------------------------
   let excludedDict = {};
   const excludedData = sheetExcluded.getDataRange().getValues();
-  // ※ 実際は「L列, T列」がどこに入っているか、列番を合わせる必要がある
-  //   ここでは対象外シートも「授業報告最新」と同じ列構成と仮定し、L列(12番目), T列(20番目)とする
   for (let i = 1; i < excludedData.length; i++) {
     const row = excludedData[i];
-    const valL = row[11];  // L列 => インデックス11
-    const valT = row[19];  // T列 => インデックス19
+    // ※「授業報告最新」と同じ列構成だと仮定し、L列→インデックス11、T列→インデックス19
+    const valL = row[11];
+    const valT = row[19];
     if (valL && valT) {
       const key = valL + "||" + valT;
       excludedDict[key] = true;
@@ -55,22 +62,21 @@ function moveData() {
   }
 
   // --------------------------------------------------------------------------------
-  // 3) 授業報告_確定シートの「最終行」を取得し、そこまでの行は処理済みとみなす
-  //    → 授業報告最新シートの (lastRowOfConfirmed + 1) 行目以降を処理する
+  // 3) 「授業報告_確定」の最終行を取得し、そこまでの行は処理済みとする
+  //    → 今回は「授業報告最新」シートの (lastRowOfConfirmed + 1) 行目以降を対象とする
   // --------------------------------------------------------------------------------
   const lastRowOfConfirmed = sheetConfirmed.getLastRow();
-  // 「授業報告最新」の総行数
-  const lastRowOfLatest = sheetLatest.getLastRow();
-  // 処理対象がなければ終了
+  const lastRowOfLatest    = sheetLatest.getLastRow();
+
   if (lastRowOfLatest <= lastRowOfConfirmed) {
     Logger.log("新規に処理する行はありません。");
     return;
   }
 
-  // 授業報告最新の全列数（必要に応じて固定長でもよい）
+  // 「授業報告最新」の全列数（必要に応じて固定長でもOK）
   const lastColOfLatest = sheetLatest.getLastColumn();
 
-  // 処理対象の範囲をまとめて取得 (行は lastRowOfConfirmed + 1 から)
+  // 処理対象のデータをまとめて取得
   const targetRange = sheetLatest.getRange(
     lastRowOfConfirmed + 1, 1,
     lastRowOfLatest - lastRowOfConfirmed,
@@ -78,21 +84,19 @@ function moveData() {
   );
   const targetValues = targetRange.getValues();
 
-  // 後で一括で貼り付けるためのバッファ
+  // --------------------------------------------------------------------------------
+  // 4) 行を走査し、条件に合うなら「授業報告_確定」へ、合わなければ「対象外」へ
+  // --------------------------------------------------------------------------------
   let rowsToConfirmed = [];
-  let rowsToExcluded = [];
+  let rowsToExcluded  = [];
 
-  // --------------------------------------------------------------------------------
-  // 4) 授業報告最新シート該当行を走査し、条件合致すれば_確定 そうでなければ_対象外(未登録なら)
-  // --------------------------------------------------------------------------------
   for (let i = 0; i < targetValues.length; i++) {
     const row = targetValues[i];
-    const valL = row[11]; // L列 => インデックス11
-    const valT = row[19]; // T列 => インデックス19
-    
+    const valL = row[11]; // L列 → インデックス11
+    const valT = row[19]; // T列 → インデックス19
+
+    // L または T が空の場合 → 対象外行き
     if (!valL || !valT) {
-      // L/Tいずれか空なら対象外へ（例外処理）
-      // すでに対象外に入っているかチェック
       const key = (valL || "") + "||" + (valT || "");
       if (!excludedDict[key]) {
         rowsToExcluded.push(row);
@@ -101,11 +105,9 @@ function moveData() {
       continue;
     }
 
-    // 授業報告(M,R)辞書 or 授業日程変更(N,R)辞書 に合致するか？
-    const checkKey = valL + "||" + valT;  // L+T
+    // L列+T列 で参照スプレッドシートの「M,R」「N,R」に該当するか判定
+    const checkKey = valL + "||" + valT;
     let isMatch = false;
-
-    // reportDict(M,R) / scheduleDict(N,R) いずれかにあれば true
     if (reportDict[checkKey] || scheduleDict[checkKey]) {
       isMatch = true;
     }
@@ -114,7 +116,7 @@ function moveData() {
       // 授業報告_確定 に追加
       rowsToConfirmed.push(row);
     } else {
-      // 対象外へ (重複チェック)
+      // 対象外(エラー)に追加 (ただし未登録なら)
       if (!excludedDict[checkKey]) {
         rowsToExcluded.push(row);
         excludedDict[checkKey] = true;
@@ -123,7 +125,7 @@ function moveData() {
   }
 
   // --------------------------------------------------------------------------------
-  // 5) 判定結果を一括で反映
+  // 5) 判定結果をシートに反映（まとめて貼り付け）
   // --------------------------------------------------------------------------------
   if (rowsToConfirmed.length > 0) {
     sheetConfirmed
@@ -143,5 +145,8 @@ function moveData() {
       .setValues(rowsToExcluded);
   }
 
-  Logger.log("処理が完了しました。 確定追加行数:" + rowsToConfirmed.length + " / 対象外追加行数:" + rowsToExcluded.length);
+  Logger.log(
+    "処理完了: 確定追加=" + rowsToConfirmed.length + 
+    " / 対象外追加=" + rowsToExcluded.length
+  );
 }
